@@ -87,13 +87,31 @@ jobs:
             --task-definition ${{ env.ECS_TASK_DEFINITION }} \
             --query taskDefinition > task-definition.json
           
-          # Update image URI using jq (pre-installed in GitHub Actions)
+          # Update image URI and environment variables using jq (pre-installed in GitHub Actions)
           jq --arg IMAGE "$IMAGE_URI" \
            '.containerDefinitions[0].image = $IMAGE
             | .containerDefinitions[0].secrets = [
                 {
                   "name": "GEN_AI_STUDIO_API_KEY",
                   "valueFrom": "/ece461-backend/GEN_AI_STUDIO_API_KEY"
+                }
+              ]
+            | .containerDefinitions[0].environment = [
+                {
+                  "name": "LOG_LEVEL",
+                  "value": "1"
+                },
+                {
+                  "name": "LOG_FILE",
+                  "value": "/tmp/error_logs.log"
+                },
+                {
+                  "name": "DDB_TABLE_NAME",
+                  "value": "artifacts_metadata"
+                },
+                {
+                  "name": "AWS_REGION",
+                  "value": "us-east-2"
                 }
               ]' \
            task-definition.json > task-definition-updated.json

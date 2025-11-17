@@ -24,6 +24,14 @@
         {
           "name": "LOG_FILE",
           "value": "/tmp/error_logs.log"
+        },
+        {
+          "name": "DDB_TABLE_NAME",
+          "value": "artifacts_metadata"
+        },
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-2"
         }
       ],
       "logConfiguration": {
