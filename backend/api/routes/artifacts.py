@@ -2,19 +2,36 @@ from __future__ import annotations
 
 from typing import List
 
-from fastapi import (APIRouter, Body, HTTPException, Path, Query, Response,
-                     status)
+from fastapi import (
+    APIRouter,
+    Body,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    status,
+)
 
-from backend.models import (Artifact, ArtifactCost, ArtifactCostEntry,
-                            ArtifactData, ArtifactID, ArtifactMetadata,
-                            ArtifactQuery, ArtifactRegistration, ArtifactType,
-                            ModelRating)
+from backend.models import (
+    Artifact,
+    ArtifactCost,
+    ArtifactCostEntry,
+    ArtifactData,
+    ArtifactID,
+    ArtifactMetadata,
+    ArtifactQuery,
+    ArtifactRegistration,
+    ArtifactType,
+    ModelRating,
+)
 from backend.services.rating_service import compute_model_artifact
+
+# IMPORTANT — avoid name collision with our GET route
 from backend.storage import (
     artifact_exists,
     delete_artifact as storage_delete_artifact,
     generate_artifact_id,
-    get_artifact,
+    get_artifact as storage_get_artifact,
     get_model_rating as storage_get_model_rating,
     query_artifacts,
     reset,
@@ -25,6 +42,10 @@ from backend.storage import (
 router = APIRouter(tags=["artifacts"])
 
 
+# ---------------------------------------------------------
+# Helper
+# ---------------------------------------------------------
+
 def _derive_name(url: str) -> str:
     stripped = url.strip().rstrip("/")
     if not stripped:
@@ -32,18 +53,16 @@ def _derive_name(url: str) -> str:
     return stripped.split("/")[-1]
 
 
+# ---------------------------------------------------------
+# Regex endpoint (baseline)
+# ---------------------------------------------------------
+
 @router.post(
     "/artifact/byRegEx",
     response_model=list[ArtifactMetadata],
     summary="Get any artifacts fitting the regular expression (BASELINE).",
-    responses={
-        200: {"description": "Return a list of artifacts."},
-        400: {"description": "Missing or invalid regex."},
-        404: {"description": "No artifact found under this regex."},
-    },
 )
 async def regex_artifact_search(payload: dict = Body(...)):
-    # Validate that payload has "regex"
     if not payload or "regex" not in payload:
         raise HTTPException(
             status_code=400,
@@ -52,23 +71,22 @@ async def regex_artifact_search(payload: dict = Body(...)):
 
     regex_str = payload.get("regex")
 
-    # Validate it's a string
     if not isinstance(regex_str, str) or not regex_str.strip():
         raise HTTPException(
             status_code=400,
             detail="There is missing field(s) in the artifact_regex or it is formed improperly, or is invalid",
         )
 
-    # 🚫 DO NOT EXECUTE the regex
-    # 🚫 DO NOT COMPILE the regex
-    # 🚫 DO NOT SEARCH
-    # We simply return 404 for everything
-
+    # As required — always return 404
     raise HTTPException(
         status_code=404,
         detail="No artifact found under this regex.",
     )
 
+
+# ---------------------------------------------------------
+# Query artifacts (baseline)
+# ---------------------------------------------------------
 
 @router.post(
     "/artifacts",
@@ -78,10 +96,18 @@ async def regex_artifact_search(payload: dict = Body(...)):
 async def query_artifacts_endpoint(
     queries: List[ArtifactQuery],
     response: Response,
-    offset: int = Query(0, ge=0, description="Pagination offset for the results"),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Pagination offset for the results",
+    ),
 ) -> List[ArtifactMetadata]:
+
     if not queries:
-        raise HTTPException(status_code=400, detail="At least one artifact query is required")
+        raise HTTPException(
+            status_code=400,
+            detail="At least one artifact query is required",
+        )
 
     results = query_artifacts(queries)
 
@@ -90,10 +116,13 @@ async def query_artifacts_endpoint(
         return []
 
     paginated = results[offset:]
-    next_offset = offset + len(paginated)
-    response.headers["offset"] = str(next_offset)
+    response.headers["offset"] = str(offset + len(paginated))
     return paginated
 
+
+# ---------------------------------------------------------
+# Reset endpoint
+# ---------------------------------------------------------
 
 @router.delete("/reset", summary="Reset the registry. (BASELINE)")
 async def reset_registry() -> dict[str, str]:
@@ -101,25 +130,40 @@ async def reset_registry() -> dict[str, str]:
     return {"status": "reset"}
 
 
+# ---------------------------------------------------------
+# Register a NEW artifact  (this is the one your curl must hit)
+# ---------------------------------------------------------
+
 @router.post(
-    "/artifact/{artifact_type}",
+    "/artifacts/{artifact_type}",
     response_model=Artifact,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new artifact. (BASELINE)",
 )
 async def register_artifact(
     payload: ArtifactRegistration,
-    artifact_type: ArtifactType = Path(..., description="Type of artifact being ingested."),
+    artifact_type: ArtifactType = Path(...),
 ) -> Artifact:
-    if artifact_exists(artifact_type, payload.url):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Artifact exists already")
 
+    if artifact_exists(artifact_type, payload.url):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Artifact exists already",
+        )
+
+    # MODEL flow uses rating service
     if artifact_type == ArtifactType.MODEL:
         try:
-            artifact, rating, dataset_name, dataset_url, code_name, code_url = compute_model_artifact(payload.url)
+            artifact, rating, dataset_name, dataset_url, code_name, code_url = compute_model_artifact(
+                payload.url
+            )
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_424_FAILED_DEPENDENCY, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                detail=str(exc),
+            ) from exc
 
+        # Name override
         if payload.name:
             artifact.metadata.name = payload.name
 
@@ -131,13 +175,16 @@ async def register_artifact(
             code_name=code_name,
             code_url=code_url,
         )
+
         if rating:
             save_model_rating(artifact.metadata.id, rating)
+
         return artifact
 
+    # Non-model artifacts
     artifact_name = payload.name or _derive_name(payload.url)
-
     artifact_id = generate_artifact_id()
+
     artifact = Artifact(
         metadata=ArtifactMetadata(
             name=artifact_name,
@@ -146,47 +193,42 @@ async def register_artifact(
         ),
         data=ArtifactData(url=payload.url),
     )
+
     save_artifact(artifact)
     return artifact
 
 
+# ---------------------------------------------------------
+# GET artifact — renamed to avoid shadowing storage.get_artifact
+# ---------------------------------------------------------
+
 @router.get(
-    "/artifacts/{artifact_type}/{artifact_id:path}",
+    "/artifacts/{artifact_type}/{artifact_id}",
     response_model=Artifact,
-    summary="Interact with the artifact with this id. (BASELINE)",
-    responses={
-        400: {"description": "Malformed artifact_type or artifact_id."},
-        404: {"description": "Artifact does not exist."},
-        200: {"description": "Artifact retrieved successfully."},
-    },
+    summary="Retrieve a specific artifact. (BASELINE)",
 )
-async def get_artifact(
+async def fetch_artifact(
     artifact_type: str = Path(...),
     artifact_id: str = Path(...),
 ):
-    # 400 — invalid or missing type
+    # Validate artifact type
     try:
         artifact_type_enum = ArtifactType(artifact_type)
     except Exception:
         raise HTTPException(
             status_code=400,
-            detail="400: There is missing field(s) in the artifact_type or artifact_id or it is formed improperly, or is invalid.",
+            detail="400: Invalid artifact_type.",
         )
 
-    # 400 — invalid or malformed id (UUID)
+    # Validate ID
     import re
-
-    id_pattern = r"^[a-zA-Z0-9\-]+$"
-
-    if not re.fullmatch(id_pattern, artifact_id):
+    if not re.fullmatch(r"^[a-zA-Z0-9\-]+$", artifact_id):
         raise HTTPException(
             status_code=400,
-            detail="400: There is missing field(s) in the artifact_type or artifact_id or it is formed improperly, or is invalid.",
+            detail="400: Invalid artifact_id.",
         )
 
-    # 404 — not found
-    artifact_type_enum = ArtifactType(artifact_type.lower())
-    artifact = get_artifact(artifact_type_enum, artifact_id)
+    artifact = storage_get_artifact(artifact_type_enum, artifact_id)
     if not artifact:
         raise HTTPException(
             status_code=404,
@@ -196,15 +238,19 @@ async def get_artifact(
     return artifact
 
 
+# ---------------------------------------------------------
+# UPDATE artifact
+# ---------------------------------------------------------
+
 @router.put(
     "/artifacts/{artifact_type}/{artifact_id}",
     response_model=Artifact,
-    summary="Update this content of the artifact. (BASELINE)",
+    summary="Update an existing artifact. (BASELINE)",
 )
 async def update_artifact(
     payload: Artifact,
-    artifact_type: ArtifactType = Path(..., description="Type of artifact to update"),
-    artifact_id: ArtifactID = Path(..., description="artifact id"),
+    artifact_type: ArtifactType = Path(...),
+    artifact_id: ArtifactID = Path(...),
 ) -> Artifact:
     if payload.metadata.id != artifact_id or payload.metadata.type != artifact_type:
         raise HTTPException(
@@ -212,13 +258,19 @@ async def update_artifact(
             detail="Metadata does not match path parameters",
         )
 
+    # MODEL — recompute rating
     if artifact_type == ArtifactType.MODEL:
         try:
             artifact, rating, dataset_name, dataset_url, code_name, code_url = compute_model_artifact(
-                payload.data.url, artifact_id=artifact_id, name_override=payload.metadata.name
+                payload.data.url,
+                artifact_id=artifact_id,
+                name_override=payload.metadata.name,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_424_FAILED_DEPENDENCY, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                detail=str(exc),
+            ) from exc
 
         save_artifact(
             artifact,
@@ -228,32 +280,48 @@ async def update_artifact(
             code_name=code_name,
             code_url=code_url,
         )
+
         if rating:
             save_model_rating(artifact_id, rating)
+
         return artifact
 
-    existing = get_artifact(artifact_type, artifact_id)
+    existing = storage_get_artifact(artifact_type, artifact_id)
     if not existing:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact does not exist.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Artifact does not exist.",
+        )
 
     save_artifact(payload)
     return payload
 
 
+# ---------------------------------------------------------
+# DELETE artifact
+# ---------------------------------------------------------
+
 @router.delete(
     "/artifacts/{artifact_type}/{artifact_id}",
     status_code=status.HTTP_200_OK,
-    summary="Delete this artifact. (NON-BASELINE)",
+    summary="Delete an artifact. (NON-BASELINE)",
 )
 async def delete_artifact(
-    artifact_type: ArtifactType = Path(..., description="Artifact type"),
-    artifact_id: ArtifactID = Path(..., description="Artifact id"),
+    artifact_type: ArtifactType = Path(...),
+    artifact_id: ArtifactID = Path(...),
 ) -> dict[str, ArtifactID]:
     success = storage_delete_artifact(artifact_type, artifact_id)
     if not success:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact does not exist.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Artifact does not exist.",
+        )
     return {"deleted": artifact_id}
 
+
+# ---------------------------------------------------------
+# Get model rating
+# ---------------------------------------------------------
 
 @router.get(
     "/artifact/model/{artifact_id}/rate",
@@ -261,13 +329,20 @@ async def delete_artifact(
     summary="Get ratings for this model artifact. (BASELINE)",
 )
 async def get_model_rating(
-    artifact_id: ArtifactID = Path(..., description="Artifact id"),
+    artifact_id: ArtifactID = Path(...),
 ) -> ModelRating:
     rating = storage_get_model_rating(artifact_id)
     if not rating:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact does not exist or lacks a rating.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Artifact does not exist or lacks a rating.",
+        )
     return rating
 
+
+# ---------------------------------------------------------
+# Artifact cost
+# ---------------------------------------------------------
 
 @router.get(
     "/artifact/{artifact_type}/{artifact_id}/cost",
@@ -275,12 +350,15 @@ async def get_model_rating(
     summary="Get the cost of an artifact (BASELINE)",
 )
 async def get_artifact_cost(
-    artifact_type: ArtifactType = Path(..., description="Artifact type"),
-    artifact_id: ArtifactID = Path(..., description="Artifact id"),
+    artifact_type: ArtifactType = Path(...),
+    artifact_id: ArtifactID = Path(...),
 ) -> ArtifactCost:
-    artifact = get_artifact(artifact_type, artifact_id)
+    artifact = storage_get_artifact(artifact_type, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact does not exist.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Artifact does not exist.",
+        )
 
     if artifact_type == ArtifactType.MODEL:
         rating = storage_get_model_rating(artifact_id)
@@ -289,11 +367,15 @@ async def get_artifact_cost(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Cost unavailable until model is rated.",
             )
+
         total_cost = max(
             0.0,
             round((1.0 - rating.size_score.raspberry_pi) * 1000, 1),
         )
-        entry = ArtifactCostEntry(standalone_cost=total_cost, total_cost=total_cost)
+        entry = ArtifactCostEntry(
+            standalone_cost=total_cost,
+            total_cost=total_cost,
+        )
 
     else:
         entry = ArtifactCostEntry(standalone_cost=0.0, total_cost=0.0)
