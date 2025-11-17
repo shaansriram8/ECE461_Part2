@@ -8,7 +8,7 @@ from backend.models import (Artifact, ArtifactID, ArtifactMetadata,
 from backend.storage.records import CodeRecord, DatasetRecord, ModelRecord
 
 # ---------------------------------------------------------------------------
-# In-memory stores separated by artifact type
+# In-memory stores separated by artifact typee
 # ---------------------------------------------------------------------------
 
 _MODELS: Dict[ArtifactID, ModelRecord] = {}
